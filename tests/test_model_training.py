@@ -600,6 +600,7 @@ class TestE2e:
         ) in captured.out
 
 
+@pytest.mark.uses_timeout
 @pytest.mark.timeout(300)
 @pytest.mark.parametrize("use_latest_model", [True, False])
 def test_model_finetuning(
@@ -640,6 +641,7 @@ def test_model_finetuning(
     assert isinstance(kwargs["model_to_finetune"], Interpreter)
 
 
+@pytest.mark.uses_timeout
 @pytest.mark.timeout(300)
 @pytest.mark.parametrize("use_latest_model", [True, False])
 def test_model_finetuning_core(
@@ -781,6 +783,7 @@ def test_model_finetuning_new_domain_label_stops_all_training(
     mocked_nlu_training.assert_not_called()
 
 
+@pytest.mark.uses_timeout
 @pytest.mark.timeout(300)
 @pytest.mark.parametrize("use_latest_model", [True, False])
 def test_model_finetuning_nlu(
@@ -945,6 +948,7 @@ def test_model_finetuning_nlu_new_label_to_domain_only(
     mocked_nlu_training.assert_called()
 
 
+@pytest.mark.uses_timeout
 @pytest.mark.timeout(200)
 def test_model_finetuning_nlu_with_default_epochs(
     tmp_path: Path, monkeypatch: MonkeyPatch, trained_nlu_moodbot_path: Text,

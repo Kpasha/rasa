@@ -107,6 +107,7 @@ async def test_end_to_end_evaluation_script_unknown_entity(
     assert num_stories == 1
 
 
+@pytest.mark.uses_timeout
 @pytest.mark.timeout(300)
 async def test_end_to_evaluation_with_forms(form_bot_agent: Agent):
     generator = await _create_data_generator(
@@ -251,6 +252,7 @@ def test_event_has_proper_implementation(
     assert actual_entities[0] == expected_entity
 
 
+@pytest.mark.uses_timeout
 @pytest.mark.timeout(600)
 @pytest.mark.parametrize(
     "test_file",
@@ -298,6 +300,7 @@ async def test_retrieval_intent_wrong_prediction(
     assert "# predicted: chitchat/ask_name" in failed_stories
 
 
+@pytest.mark.uses_timeout
 @pytest.mark.timeout(240)
 async def test_e2e_with_entity_evaluation(e2e_bot_agent: Agent, tmp_path: Path):
     test_file = "data/test_e2ebot/tests/test_stories.yml"

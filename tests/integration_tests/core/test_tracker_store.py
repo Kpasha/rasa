@@ -22,6 +22,7 @@ from .conftest import (
 # that something is wrong in the setup of the test
 
 
+@pytest.mark.uses_timeout
 @pytest.mark.sequential
 @pytest.mark.timeout(10)
 def test_sql_tracker_store_with_login_db(
@@ -52,6 +53,7 @@ def test_sql_tracker_store_with_login_db(
     tracker_store.engine.dispose()
 
 
+@pytest.mark.uses_timeout
 @pytest.mark.sequential
 @pytest.mark.timeout(10)
 def test_sql_tracker_store_with_login_db_db_already_exists(
@@ -85,6 +87,7 @@ def test_sql_tracker_store_with_login_db_db_already_exists(
     tracker_store.engine.dispose()
 
 
+@pytest.mark.uses_timeout
 @pytest.mark.sequential
 @pytest.mark.timeout(10)
 def test_sql_tracker_store_with_login_db_race_condition(

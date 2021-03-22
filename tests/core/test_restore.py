@@ -8,6 +8,7 @@ from rasa.shared.nlu.constants import ACTION_NAME
 import pytest
 
 
+@pytest.mark.uses_timeout
 @pytest.mark.timeout(600)
 async def test_restoring_tracker(trained_moodbot_path: Text, recwarn):
     tracker_dump = "data/test_trackers/tracker_moodbot.json"
