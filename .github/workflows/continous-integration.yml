@@ -249,7 +249,7 @@ jobs:
 
     - name: Add github workflow problem matchers
       run: |
-        echo "::add-matcher::.github/matchers/pytest-matcher.json"
+        poetry run pip install pytest-github-actions-annotate-failures
 
     - name: Test Code 🔍
       if: needs.changes.outputs.backend == 'true' && !(matrix.python-version == 3.8 && matrix.os == 'windows-latest')
