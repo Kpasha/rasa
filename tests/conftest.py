@@ -86,6 +86,28 @@ EXAMPLE_DOMAINS = [
 ]
 
 
+def pytest_sessionstart(session):
+    session.results = dict()
+
+
+@pytest.hookimpl(tryfirst=True, hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    result = outcome.get_result()
+
+    if result.when == "call":
+        item.session.results[item] = result
+
+
+def pytest_sessionfinish(session, exitstatus):
+    for result in session.results.values():
+        if result.failed:
+            crash = result.longrepr.reprcrash
+            e = f"{crash.message} ({crash.path}:{crash.lineno})"
+            e = e.encode("unicode_escape").decode("utf-8")
+            print(f"::error file={result.location[0]} line={result.location[1]}::{e}")
+
+
 @pytest.fixture(scope="session")
 def nlu_as_json_path() -> Text:
     return "data/examples/rasa/demo-rasa.json"

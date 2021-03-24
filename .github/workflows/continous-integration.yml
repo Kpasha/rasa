@@ -129,8 +129,10 @@ jobs:
         # can calculate the proper diff between the branches
         git fetch --unshallow origin "${{ github.ref }}"
 
-    - name: Setup flake8 annotations
-      uses: rbialon/flake8-annotations@v1
+    - name: Add github workflow problem matchers
+      run: |
+        echo "::add-matcher::.github/matchers/flake8-error-matcher.json"
+        echo "::add-matcher::.github/matchers/flake8-warning-matcher.json"
 
     - name: Lint Code 🎎
       if: needs.changes.outputs.backend == 'true'
@@ -244,6 +246,10 @@ jobs:
         }
         make install-full
         make prepare-tests-windows
+
+    - name: Add github workflow problem matchers
+      run: |
+        echo "::add-matcher::.github/matchers/pytest-matcher.json"
 
     - name: Test Code 🔍
       if: needs.changes.outputs.backend == 'true' && !(matrix.python-version == 3.8 && matrix.os == 'windows-latest')
