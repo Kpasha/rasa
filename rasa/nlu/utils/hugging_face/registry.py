@@ -41,7 +41,8 @@ model_class_dict = {
     "gpt": TFOpenAIGPTModel,
     "gpt2": TFGPT2Model,
     "xlnet": TFXLNetModel,
-    # "xlm": TFXLMModel, # Currently doesn't work because of a bug in transformers library https://github.com/huggingface/transformers/issues/2729
+    # "xlm": TFXLMModel, # Currently doesn't work because of a bug in transformers
+    # library https://github.com/huggingface/transformers/issues/2729
     "distilbert": TFDistilBertModel,
     "roberta": TFRobertaModel,
 }
@@ -55,7 +56,7 @@ model_tokenizer_dict = {
     "roberta": RobertaTokenizer,
 }
 model_weights_defaults = {
-    "bert": "bert-base-uncased",
+    "bert": "rasa/LaBSE",
     "gpt": "openai-gpt",
     "gpt2": "gpt2",
     "xlnet": "xlnet-base-cased",

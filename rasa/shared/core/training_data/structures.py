@@ -4,19 +4,33 @@ from collections import deque, defaultdict
 
 import uuid
 import typing
-from typing import List, Text, Dict, Optional, Tuple, Any, Set, ValuesView, Union
+from typing import (
+    List,
+    Text,
+    Dict,
+    Optional,
+    Tuple,
+    Any,
+    Set,
+    ValuesView,
+    Union,
+    Sequence,
+    cast,
+)
 
 import rasa.shared.utils.io
 from rasa.shared.core.constants import ACTION_LISTEN_NAME, ACTION_SESSION_START_NAME
-from rasa.shared.core.conversation import Dialogue  # pytype: disable=pyi-error
-from rasa.shared.core.domain import Domain  # pytype: disable=pyi-error
-from rasa.shared.core.events import (  # pytype: disable=pyi-error
+from rasa.shared.core.conversation import Dialogue
+from rasa.shared.core.domain import Domain
+from rasa.shared.core.events import (
     UserUttered,
     ActionExecuted,
     Event,
     SessionStarted,
 )
-from rasa.shared.core.trackers import DialogueStateTracker  # pytype: disable=pyi-error
+from rasa.shared.core.trackers import DialogueStateTracker
+from rasa.shared.exceptions import RasaCoreException
+
 
 if typing.TYPE_CHECKING:
     import networkx as nx
@@ -39,6 +53,13 @@ FORM_PREFIX = "form: "
 # prefix for storystep ID to get reproducible sorting results
 # will get increased with each new instance
 STEP_COUNT = 1
+
+
+class EventTypeError(RasaCoreException, ValueError):
+    """Represents an error caused by a Rasa Core event not being of the expected
+    type.
+
+    """
 
 
 class Checkpoint:
@@ -131,6 +152,22 @@ class StoryStep:
     def _bot_string(story_step_element: Event) -> Text:
         return f"    - {story_step_element.as_story_string()}\n"
 
+    @staticmethod
+    def _or_string(story_step_element: Sequence[Event], e2e: bool) -> Text:
+        for event in story_step_element:
+            if not isinstance(event, UserUttered):
+                raise EventTypeError(
+                    "OR statement events must be of type `UserUttered`."
+                )
+
+        # FIXME: https://github.com/python/mypy/issues/7853
+        story_step_element = cast(Sequence[UserUttered], story_step_element)
+
+        result = " OR ".join(
+            [element.as_story_string(e2e) for element in story_step_element]
+        )
+        return f"* {result}\n"
+
     def as_story_string(self, flat: bool = False, e2e: bool = False) -> Text:
         # if the result should be flattened, we
         # will exclude the caption and any checkpoints.
@@ -138,50 +175,51 @@ class StoryStep:
             result = ""
         else:
             result = f"\n## {self.block_name}\n"
-            for s in self.start_checkpoints:
-                if s.name != STORY_START:
-                    result += self._checkpoint_string(s)
+            for checkpoint in self.start_checkpoints:
+                if checkpoint.name != STORY_START:
+                    result += self._checkpoint_string(checkpoint)
 
-        for s in self.events:
+        for event in self.events:
             if (
-                self.is_action_listen(s)
-                or self.is_action_session_start(s)
-                or isinstance(s, SessionStarted)
+                self.is_action_listen(event)
+                or self.is_action_session_start(event)
+                or isinstance(event, SessionStarted)
             ):
                 continue
 
-            if isinstance(s, UserUttered):
-                result += self._user_string(s, e2e)
-            elif isinstance(s, Event):
-                converted = s.as_story_string()  # pytype: disable=attribute-error
+            if isinstance(event, UserUttered):
+                result += self._user_string(event, e2e)
+            elif isinstance(event, Event):
+                converted = event.as_story_string()
                 if converted:
-                    result += self._bot_string(s)
+                    result += self._bot_string(event)
+            elif isinstance(event, list):
+                # The story reader classes support reading stories in
+                # conversion mode.  When this mode is enabled, OR statements
+                # are represented as lists of events.
+                result += self._or_string(event, e2e)
             else:
-                raise Exception(f"Unexpected element in story step: {s}")
+                raise Exception(f"Unexpected element in story step: {event}")
 
         if not flat:
-            for s in self.end_checkpoints:
-                result += self._checkpoint_string(s)
+            for checkpoint in self.end_checkpoints:
+                result += self._checkpoint_string(checkpoint)
         return result
 
     @staticmethod
     def is_action_listen(event: Event) -> bool:
         # this is not an `isinstance` because
         # we don't want to allow subclasses here
-        # pytype: disable=attribute-error
         return type(event) == ActionExecuted and event.action_name == ACTION_LISTEN_NAME
-        # pytype: enable=attribute-error
 
     @staticmethod
     def is_action_session_start(event: Event) -> bool:
         # this is not an `isinstance` because
         # we don't want to allow subclasses here
-        # pytype: disable=attribute-error
         return (
             type(event) == ActionExecuted
             and event.action_name == ACTION_SESSION_START_NAME
         )
-        # pytype: enable=attribute-error
 
     def _add_action_listen(self, events: List[Event]) -> None:
         if not events or not self.is_action_listen(events[-1]):
@@ -205,11 +243,7 @@ class StoryStep:
             if isinstance(e, UserUttered):
                 self._add_action_listen(events)
                 events.append(e)
-                events.extend(
-                    domain.slots_for_entities(
-                        e.entities  # pytype: disable=attribute-error
-                    )
-                )
+                events.extend(domain.slots_for_entities(e.entities))
             else:
                 events.append(e)
 
@@ -375,14 +409,28 @@ class StoryGraph:
             self.story_end_checkpoints = {}
 
     def __hash__(self) -> int:
-        self_as_string = self.as_story_string()
-        text_hash = rasa.shared.utils.io.get_text_hash(self_as_string)
+        """Return hash for the story step.
 
-        return int(text_hash, 16)
+        Returns:
+            Hash of the story step.
+        """
+        return int(self.fingerprint(), 16)
+
+    def fingerprint(self) -> Text:
+        """Returns a unique hash for the stories which is stable across python runs.
+
+        Returns:
+            fingerprint of the stories
+        """
+        from rasa.shared.core.training_data.story_writer.yaml_story_writer import (
+            YAMLStoryWriter,
+        )
+
+        stories_as_yaml = YAMLStoryWriter().stories_to_yaml(self.story_steps)
+        return rasa.shared.utils.io.deep_container_fingerprint(stories_as_yaml)
 
     def ordered_steps(self) -> List[StoryStep]:
         """Returns the story steps ordered by topological order of the DAG."""
-
         return [self.get(step_id) for step_id in self.ordered_ids]
 
     def cyclic_edges(self) -> List[Tuple[Optional[StoryStep], Optional[StoryStep]]]:
@@ -658,7 +706,7 @@ class StoryGraph:
 
         removed_edges = set()
 
-        def dfs(node):
+        def dfs(node: Text) -> None:
             visited_nodes[node] = GRAY
             for k in sorted(graph.get(node, set())):
                 sk = visited_nodes.get(k, None)

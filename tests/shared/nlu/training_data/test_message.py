@@ -13,7 +13,6 @@ from rasa.shared.nlu.constants import (
     ACTION_NAME,
     INTENT,
     RESPONSE,
-    INTENT_NAME,
 )
 import rasa.shared.nlu.training_data.message
 from rasa.shared.nlu.training_data.message import Message
@@ -252,36 +251,25 @@ def test_features_present(
     assert actual == expected
 
 
-def test_ordered():
-    target = {"a": [1, 3, 2], "c": "a", "b": 1}
-    assert rasa.shared.nlu.training_data.message.ordered(target) == [
-        ("a", [1, 2, 3]),
-        ("b", 1),
-        ("c", "a"),
-    ]
-
-
-def test_build_from_action():
-    test_action_name = "test_action_name"
-    test_action_text = "test action text"
-    assert Message.build_from_action(
-        action_text=test_action_text, action_name=test_action_name
-    ) == Message(data={ACTION_NAME: test_action_name, ACTION_TEXT: test_action_text})
-
-
 @pytest.mark.parametrize(
-    "message, core_message",
+    "message, result",
     [
         (Message({INTENT: "intent", TEXT: "text"}), False),
         (Message({RESPONSE: "response", TEXT: "text"}), False),
         (Message({INTENT: "intent"}), True),
-        (Message({ACTION_TEXT: "action text", ACTION_NAME: ""}), True),
-        (Message({ACTION_NAME: "action"}), True),
+        (Message({ACTION_TEXT: "action text"}), True),
+        (Message({ACTION_NAME: "action name"}), True),
         (Message({TEXT: "text"}), True),
-        (Message({TEXT: None, INTENT_NAME: "affirm"}), True),
     ],
 )
-def test_is_core_message(
-    message: Message, core_message: bool,
+def test_is_core_or_domain_message(
+    message: Message, result: bool,
 ):
-    assert core_message == message.is_core_message()
+    assert result == message.is_core_or_domain_message()
+
+
+def test_add_diagnostic_data_with_repeated_component_raises_warning():
+    message = Message()
+    message.add_diagnostic_data("a", {})
+    with pytest.warns(UserWarning):
+        message.add_diagnostic_data("a", {})

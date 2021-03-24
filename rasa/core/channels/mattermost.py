@@ -98,9 +98,8 @@ class MattermostBot(OutputChannel):
         **kwargs: Any,
     ) -> None:
         """Sends buttons to the output."""
-
         # buttons are a list of objects: [(option_name, payload)]
-        # See https://docs.mattermost.com/developer/interactive-messages.html#message-buttons
+        # See https://docs.mattermost.com/developer/interactive-messages.html#message-buttons # noqa: W505
 
         actions = [
             {
@@ -132,7 +131,6 @@ class MattermostInput(InputChannel):
         if credentials is None:
             cls.raise_missing_credentials_exception()
 
-        # pytype: disable=attribute-error
         if credentials.get("pw") is not None or credentials.get("user") is not None:
             rasa.shared.utils.io.raise_deprecation_warning(
                 "Mattermost recently switched to bot accounts. 'user' and 'pw' "
@@ -148,7 +146,6 @@ class MattermostInput(InputChannel):
             token = credentials.get("token")
 
         return cls(credentials.get("url"), token, credentials.get("webhook_url"))
-        # pytype: enable=attribute-error
 
     def __init__(self, url: Text, token: Text, webhook_url: Text) -> None:
         """Create a Mattermost input channel.

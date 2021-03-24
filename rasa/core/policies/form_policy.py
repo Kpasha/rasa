@@ -3,6 +3,7 @@ from typing import List, Dict, Text, Optional, Any, Union, Tuple
 
 import rasa.shared.utils.common
 import rasa.shared.utils.io
+from rasa.core.policies.policy import PolicyPrediction
 from rasa.shared.constants import DOCS_URL_MIGRATION_GUIDE
 from rasa.shared.core.constants import (
     ACTION_LISTEN_NAME,
@@ -20,8 +21,6 @@ from rasa.shared.core.trackers import DialogueStateTracker
 from rasa.core.constants import FORM_POLICY_PRIORITY
 from rasa.shared.nlu.constants import ACTION_NAME
 
-from rasa.utils import common as common_utils
-
 
 logger = logging.getLogger(__name__)
 
@@ -36,12 +35,17 @@ class FormPolicy(MemoizationPolicy):
         featurizer: Optional[TrackerFeaturizer] = None,
         priority: int = FORM_POLICY_PRIORITY,
         lookup: Optional[Dict] = None,
+        **kwargs: Any,
     ) -> None:
 
         # max history is set to 2 in order to capture
         # previous meaningful action before action listen
         super().__init__(
-            featurizer=featurizer, priority=priority, max_history=2, lookup=lookup
+            featurizer=featurizer,
+            priority=priority,
+            max_history=2,
+            lookup=lookup,
+            **kwargs,
         )
 
         rasa.shared.utils.io.raise_deprecation_warning(
@@ -79,7 +83,6 @@ class FormPolicy(MemoizationPolicy):
 
         return [action_before_listen, states[-1]]
 
-    # pytype: disable=bad-return-type
     def _create_lookup_from_states(
         self,
         trackers_as_states: List[List[State]],
@@ -99,11 +102,19 @@ class FormPolicy(MemoizationPolicy):
                 lookup[feature_key] = active_form
         return lookup
 
-    # pytype: enable=bad-return-type
-
     def recall(
-        self, states: List[State], tracker: DialogueStateTracker, domain: Domain
+        self, states: List[State], tracker: DialogueStateTracker, domain: Domain,
     ) -> Optional[Text]:
+        """Finds the action based on the given states.
+
+        Args:
+            states: List of states.
+            tracker: The tracker.
+            domain: The Domain.
+
+        Returns:
+            The name of the action.
+        """
         # modify the states
         return self._recall_states(self._modified_states(states))
 
@@ -111,8 +122,7 @@ class FormPolicy(MemoizationPolicy):
         # since it is assumed that training stories contain
         # only unhappy paths, notify the form that
         # it should not be validated if predicted by other policy
-        tracker_as_states = self.featurizer.prediction_states([tracker], domain)
-        states = tracker_as_states[0]
+        states = self._prediction_states(tracker, domain)
 
         memorized_form = self.recall(states, tracker, domain)
 
@@ -135,8 +145,8 @@ class FormPolicy(MemoizationPolicy):
         domain: Domain,
         interpreter: NaturalLanguageInterpreter,
         **kwargs: Any,
-    ) -> List[float]:
-        """Predicts the corresponding form action if there is an active form"""
+    ) -> PolicyPrediction:
+        """Predicts the corresponding form action if there is an active form."""
         result = self._default_predictions(domain)
 
         if tracker.active_loop_name:
@@ -148,8 +158,7 @@ class FormPolicy(MemoizationPolicy):
 
                 if tracker.active_loop.get(LOOP_REJECTED):
                     if self.state_is_unhappy(tracker, domain):
-                        tracker.update(LoopInterrupted(True))
-                        return result
+                        return self._prediction(result, events=[LoopInterrupted(True)])
 
                 result = self._prediction_result(
                     tracker.active_loop_name, tracker, domain
@@ -162,7 +171,7 @@ class FormPolicy(MemoizationPolicy):
         else:
             logger.debug("There is no active form")
 
-        return result
+        return self._prediction(result)
 
     def _metadata(self) -> Dict[Text, Any]:
         return {"priority": self.priority, "lookup": self.lookup}

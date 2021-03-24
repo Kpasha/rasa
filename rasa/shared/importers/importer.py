@@ -13,7 +13,7 @@ from rasa.shared.nlu.interpreter import NaturalLanguageInterpreter, RegexInterpr
 from rasa.shared.core.training_data.structures import StoryGraph
 from rasa.shared.nlu.training_data.message import Message
 from rasa.shared.nlu.training_data.training_data import TrainingData
-from rasa.shared.nlu.constants import INTENT_NAME, TEXT
+from rasa.shared.nlu.constants import ENTITIES, ACTION_NAME
 from rasa.shared.importers.autoconfig import TrainingType
 from rasa.shared.core.domain import IS_RETRIEVAL_INTENT_KEY
 
@@ -100,8 +100,7 @@ class TrainingDataImporter:
         importer = TrainingDataImporter.load_from_config(
             config_path, domain_path, training_data_paths, TrainingType.CORE
         )
-
-        return CoreDataImporter(importer)
+        return importer
 
     @staticmethod
     def load_nlu_importer_from_config(
@@ -127,8 +126,8 @@ class TrainingDataImporter:
 
     @staticmethod
     def load_from_dict(
-        config: Optional[Dict],
-        config_path: Text,
+        config: Optional[Dict] = None,
+        config_path: Optional[Text] = None,
         domain_path: Optional[Text] = None,
         training_data_paths: Optional[List[Text]] = None,
         training_type: Optional[TrainingType] = TrainingType.BOTH,
@@ -153,7 +152,7 @@ class TrainingDataImporter:
                 )
             ]
 
-        return E2EImporter(RetrievalModelsDataImporter(CombinedDataImporter(importers)))
+        return E2EImporter(ResponsesSyncImporter(CombinedDataImporter(importers)))
 
     @staticmethod
     def _importer_from_dict(
@@ -215,34 +214,9 @@ class NluDataImporter(TrainingDataImporter):
         return await self._importer.get_nlu_data(language)
 
 
-class CoreDataImporter(TrainingDataImporter):
-    """Importer that skips any NLU related file reading."""
-
-    def __init__(self, actual_importer: TrainingDataImporter):
-        self._importer = actual_importer
-
-    async def get_domain(self) -> Domain:
-        return await self._importer.get_domain()
-
-    async def get_stories(
-        self,
-        template_variables: Optional[Dict] = None,
-        use_e2e: bool = False,
-        exclusion_percentage: Optional[int] = None,
-    ) -> StoryGraph:
-        return await self._importer.get_stories(
-            template_variables, use_e2e, exclusion_percentage
-        )
-
-    async def get_config(self) -> Dict:
-        return await self._importer.get_config()
-
-    async def get_nlu_data(self, language: Optional[Text] = "en") -> TrainingData:
-        return TrainingData()
-
-
 class CombinedDataImporter(TrainingDataImporter):
     """A `TrainingDataImporter` that combines multiple importers.
+
     Uses multiple `TrainingDataImporter` instances
     to load the data as if they were a single instance.
     """
@@ -293,11 +267,11 @@ class CombinedDataImporter(TrainingDataImporter):
         )
 
 
-class RetrievalModelsDataImporter(TrainingDataImporter):
-    """A `TrainingDataImporter` that sets up the data for training retrieval models.
+class ResponsesSyncImporter(TrainingDataImporter):
+    """Importer that syncs `responses` between Domain and NLU training data.
 
-    Synchronizes response templates between Domain and NLU
-    and adds retrieval intent properties from the NLU training data
+    Synchronizes responses between Domain and NLU and
+    adds retrieval intent properties from the NLU training data
     back to the Domain.
     """
 
@@ -314,32 +288,31 @@ class RetrievalModelsDataImporter(TrainingDataImporter):
         existing_domain = await self._importer.get_domain()
         existing_nlu_data = await self._importer.get_nlu_data()
 
-        # Check if NLU data has any retrieval intents, if yes
-        # add corresponding retrieval actions with `utter_` prefix automatically
-        # to an empty domain, update the properties of existing retrieval intents
-        # and merge response templates
-        if existing_nlu_data.retrieval_intents:
+        # Merge responses from NLU data with responses in the domain.
+        # If NLU data has any retrieval intents, then add corresponding
+        # retrieval actions with `utter_` prefix automatically to the
+        # final domain, update the properties of existing retrieval intents.
+        domain_with_retrieval_intents = self._get_domain_with_retrieval_intents(
+            existing_nlu_data.retrieval_intents,
+            existing_nlu_data.responses,
+            existing_domain,
+        )
 
-            domain_with_retrieval_intents = self._get_domain_with_retrieval_intents(
-                existing_nlu_data.retrieval_intents,
-                existing_nlu_data.responses,
-                existing_domain,
-            )
-
-            existing_domain = existing_domain.merge(domain_with_retrieval_intents)
+        existing_domain = existing_domain.merge(domain_with_retrieval_intents)
+        existing_domain.check_missing_responses()
 
         return existing_domain
 
     @staticmethod
     def _construct_retrieval_action_names(retrieval_intents: Set[Text]) -> List[Text]:
-        """List names of all retrieval actions corresponding to passed retrieval intents.
+        """Lists names of all retrieval actions related to passed retrieval intents.
 
         Args:
-            retrieval_intents: List of retrieval intents defined in the NLU training data.
+            retrieval_intents: List of retrieval intents defined in the NLU training
+                data.
 
         Returns: Names of corresponding retrieval actions
         """
-
         return [
             f"{rasa.shared.constants.UTTER_PREFIX}{intent}"
             for intent in retrieval_intents
@@ -348,19 +321,22 @@ class RetrievalModelsDataImporter(TrainingDataImporter):
     @staticmethod
     def _get_domain_with_retrieval_intents(
         retrieval_intents: Set[Text],
-        response_templates: Dict[Text, List[Dict[Text, Any]]],
+        responses: Dict[Text, List[Dict[Text, Any]]],
         existing_domain: Domain,
     ) -> Domain:
-        """Construct a domain consisting of retrieval intents listed in the NLU training data.
+        """Construct a domain consisting of retrieval intents.
+
+         The result domain will have retrieval intents that are listed
+         in the NLU training data.
 
         Args:
             retrieval_intents: Set of retrieval intents defined in NLU training data.
+            responses: Responses defined in NLU training data.
             existing_domain: Domain which is already loaded from the domain file.
 
         Returns: Domain with retrieval actions added to action names and properties
-        for retrieval intents updated.
+          for retrieval intents updated.
         """
-
         # Get all the properties already defined
         # for each retrieval intent in other domains
         # and add the retrieval intent property to them
@@ -378,11 +354,9 @@ class RetrievalModelsDataImporter(TrainingDataImporter):
             retrieval_intent_properties,
             [],
             [],
-            response_templates,
-            RetrievalModelsDataImporter._construct_retrieval_action_names(
-                retrieval_intents
-            ),
-            [],
+            responses,
+            ResponsesSyncImporter._construct_retrieval_action_names(retrieval_intents),
+            {},
         )
 
     async def get_stories(
@@ -398,33 +372,35 @@ class RetrievalModelsDataImporter(TrainingDataImporter):
 
     @rasa.shared.utils.common.cached_method
     async def get_nlu_data(self, language: Optional[Text] = "en") -> TrainingData:
-        """Update NLU data with response templates defined in the domain"""
+        """Updates NLU data with responses for retrieval intents from domain."""
         existing_nlu_data = await self._importer.get_nlu_data(language)
         existing_domain = await self._importer.get_domain()
 
         return existing_nlu_data.merge(
-            self._get_nlu_data_with_responses(existing_domain.templates)
+            self._get_nlu_data_with_responses(
+                existing_domain.retrieval_intent_responses
+            )
         )
 
     @staticmethod
     def _get_nlu_data_with_responses(
-        response_templates: Dict[Text, List[Dict[Text, Any]]]
+        responses: Dict[Text, List[Dict[Text, Any]]]
     ) -> TrainingData:
-        """Construct training data object with only the response templates supplied.
+        """Construct training data object with only the responses supplied.
 
         Args:
-            response_templates: Response templates the NLU data should
+            responses: Responses the NLU data should
             be initialized with.
 
-        Returns: TrainingData object with response templates.
+        Returns: TrainingData object with responses.
 
         """
-
-        return TrainingData(responses=response_templates)
+        return TrainingData(responses=responses)
 
 
 class E2EImporter(TrainingDataImporter):
-    """Importer which
+    """Importer with the following functionality.
+
     - enhances the NLU training data with actions / user messages from the stories.
     - adds potential end-to-end bot messages from stories as actions to the domain
     """
@@ -440,7 +416,6 @@ class E2EImporter(TrainingDataImporter):
         return original.merge(e2e_domain)
 
     async def _get_domain_with_e2e_actions(self) -> Domain:
-        from rasa.shared.core.events import ActionExecuted
 
         stories = await self.get_stories()
 
@@ -457,7 +432,13 @@ class E2EImporter(TrainingDataImporter):
         additional_e2e_action_names = list(additional_e2e_action_names)
 
         return Domain(
-            [], [], [], {}, action_names=additional_e2e_action_names, forms=[]
+            [],
+            [],
+            [],
+            {},
+            action_names=[],
+            forms={},
+            action_texts=additional_e2e_action_names,
         )
 
     async def get_stories(
@@ -467,6 +448,10 @@ class E2EImporter(TrainingDataImporter):
         use_e2e: bool = False,
         exclusion_percentage: Optional[int] = None,
     ) -> StoryGraph:
+        """Retrieves the stories that should be used for training.
+
+        See parent class for details.
+        """
         return await self.importer.get_stories(
             template_variables, use_e2e, exclusion_percentage
         )
@@ -530,18 +515,23 @@ def _unique_events_from_stories(
 
 
 def _messages_from_user_utterance(event: UserUttered) -> Message:
-    return Message(data={TEXT: event.text, INTENT_NAME: event.intent_name})
+    # sub state correctly encodes intent vs text
+    data = event.as_sub_state()
+    # sub state stores entities differently
+    if data.get(ENTITIES) and event.entities:
+        data[ENTITIES] = event.entities
+
+    return Message(data=data)
 
 
 def _messages_from_action(event: ActionExecuted) -> Message:
-    return Message.build_from_action(
-        action_name=event.action_name, action_text=event.action_text or ""
-    )
+    # sub state correctly encodes action_name vs action_text
+    return Message(data=event.as_sub_state())
 
 
 def _additional_training_data_from_default_actions() -> TrainingData:
     additional_messages_from_default_actions = [
-        Message.build_from_action(action_name=action_name)
+        Message(data={ACTION_NAME: action_name})
         for action_name in rasa.shared.core.constants.DEFAULT_ACTION_NAMES
     ]
 

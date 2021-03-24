@@ -1,24 +1,30 @@
 import asyncio
 from pathlib import Path
-from typing import Text, List
+from typing import Text, List, Dict, Any
+from unittest.mock import Mock
+from _pytest.monkeypatch import MonkeyPatch
 
 import pytest
 
 import rasa.shared.utils.io
-from rasa.shared.core.domain import Domain
-from rasa.shared.core.events import UserUttered, ActionExecuted
-from rasa.shared.core.training_data.structures import StoryStep, StoryGraph
-from rasa.shared.importers.importer import E2EImporter, TrainingDataImporter
-from rasa.shared.nlu.constants import TEXT, INTENT_RESPONSE_KEY
+from rasa.shared.core.constants import USER_INTENT_OUT_OF_SCOPE
+from rasa.shared.nlu.constants import (
+    TEXT,
+    INTENT_RESPONSE_KEY,
+    ENTITY_ATTRIBUTE_START,
+    ENTITY_ATTRIBUTE_END,
+    ENTITY_ATTRIBUTE_VALUE,
+    ENTITY_ATTRIBUTE_TYPE,
+    ENTITIES,
+    INTENT,
+    ACTION_NAME,
+)
 from rasa.nlu.convert import convert_training_data
 from rasa.nlu.extractors.mitie_entity_extractor import MitieEntityExtractor
 from rasa.nlu.tokenizers.whitespace_tokenizer import WhitespaceTokenizer
+from rasa.shared.nlu.training_data.message import Message
 from rasa.shared.nlu.training_data.training_data import TrainingData
-from rasa.shared.nlu.training_data.loading import (
-    guess_format,
-    UNK,
-    load_data,
-)
+from rasa.shared.nlu.training_data.loading import guess_format, UNK, load_data
 from rasa.shared.nlu.training_data.util import (
     get_file_format_extension,
     template_key_to_intent_response_key,
@@ -26,14 +32,19 @@ from rasa.shared.nlu.training_data.util import (
 )
 
 import rasa.shared.data
+from rasa.shared.core.domain import Domain
+from rasa.shared.core.events import UserUttered, ActionExecuted
+from rasa.shared.core.training_data.structures import StoryGraph, StoryStep
+from rasa.shared.importers.importer import TrainingDataImporter, E2EImporter
 
 
 def test_luis_data():
-    td = load_data("data/examples/luis/demo-restaurants_v5.json")
+    td = load_data("data/examples/luis/demo-restaurants_v7.json")
 
     assert not td.is_empty()
     assert len(td.entity_examples) == 8
     assert len(td.intent_examples) == 28
+    assert len(td.regex_features) == 1
     assert len(td.training_examples) == 28
     assert td.entity_synonyms == {}
     assert td.intents == {"affirm", "goodbye", "greet", "inform"}
@@ -44,11 +55,11 @@ def test_wit_data():
     td = load_data("data/examples/wit/demo-flights.json")
     assert not td.is_empty()
     assert len(td.entity_examples) == 4
-    assert len(td.intent_examples) == 1
-    assert len(td.training_examples) == 4
+    assert len(td.intent_examples) == 5
+    assert len(td.training_examples) == 5
     assert td.entity_synonyms == {}
-    assert td.intents == {"flight_booking"}
-    assert td.entities == {"location", "datetime"}
+    assert td.intents == {"flight_booking", USER_INTENT_OUT_OF_SCOPE}
+    assert td.entities == {"location", "wit$datetime"}
 
 
 def test_dialogflow_data():
@@ -57,6 +68,7 @@ def test_dialogflow_data():
     assert len(td.entity_examples) == 5
     assert len(td.intent_examples) == 24
     assert len(td.training_examples) == 24
+    assert len(td.regex_features) == 1
     assert len(td.lookup_tables) == 2
     assert td.intents == {"affirm", "goodbye", "hi", "inform"}
     assert td.entities == {"cuisine", "location"}
@@ -86,17 +98,16 @@ def test_lookup_table_json():
     assert td_lookup.lookup_tables[0]["elements"] == lookup_fname
 
 
-def test_lookup_table_md():
-    lookup_fname = "data/test/lookup_tables/plates.txt"
-    td_lookup = load_data("data/test/lookup_tables/lookup_table.md")
+def test_lookup_table_yaml():
+    td_lookup = load_data("data/test/lookup_tables/lookup_table.yml")
     assert not td_lookup.is_empty()
     assert len(td_lookup.lookup_tables) == 1
     assert td_lookup.lookup_tables[0]["name"] == "plates"
-    assert td_lookup.lookup_tables[0]["elements"] == lookup_fname
+    assert len(td_lookup.lookup_tables[0]["elements"]) == 5
 
 
 def test_composite_entities_data():
-    td = load_data("data/test/demo-rasa-composite-entities.md")
+    td = load_data("data/test/demo-rasa-composite-entities.yml")
     assert not td.is_empty()
     assert len(td.entity_examples) == 11
     assert len(td.intent_examples) == 45
@@ -135,11 +146,11 @@ def test_template_key_to_intent_response_key():
     [
         [
             "data/examples/rasa/demo-rasa.json",
-            "data/examples/rasa/demo-rasa-responses.md",
+            "data/examples/rasa/demo-rasa-responses.yml",
         ],
         [
-            "data/examples/rasa/demo-rasa.md",
-            "data/examples/rasa/demo-rasa-responses.md",
+            "data/examples/rasa/demo-rasa.yml",
+            "data/examples/rasa/demo-rasa-responses.yml",
         ],
     ],
 )
@@ -184,11 +195,11 @@ def test_demo_data(files: List[Text]):
     [
         [
             "data/examples/rasa/demo-rasa.json",
-            "data/examples/rasa/demo-rasa-responses.md",
+            "data/examples/rasa/demo-rasa-responses.yml",
         ],
         [
-            "data/examples/rasa/demo-rasa.md",
-            "data/examples/rasa/demo-rasa-responses.md",
+            "data/examples/rasa/demo-rasa.yml",
+            "data/examples/rasa/demo-rasa-responses.yml",
         ],
     ],
 )
@@ -214,59 +225,84 @@ def test_demo_data_filter_out_retrieval_intents(files):
 
 @pytest.mark.parametrize(
     "filepaths",
-    [["data/examples/rasa/demo-rasa.md", "data/examples/rasa/demo-rasa-responses.md"]],
+    [
+        [
+            "data/examples/rasa/demo-rasa.yml",
+            "data/examples/rasa/demo-rasa-responses.yml",
+        ]
+    ],
 )
 def test_train_test_split(filepaths: List[Text]):
     from rasa.shared.importers.utils import training_data_from_paths
 
-    trainingdata = training_data_from_paths(filepaths, language="en")
+    training_data = training_data_from_paths(filepaths, language="en")
 
-    assert trainingdata.intents == {
+    assert training_data.intents == {
         "affirm",
         "greet",
         "restaurant_search",
         "goodbye",
         "chitchat",
     }
-    assert trainingdata.entities == {"location", "cuisine"}
-    assert set(trainingdata.responses.keys()) == {
+    assert training_data.entities == {"location", "cuisine"}
+    assert set(training_data.responses.keys()) == {
         "utter_chitchat/ask_name",
         "utter_chitchat/ask_weather",
     }
 
-    assert len(trainingdata.training_examples) == 46
-    assert len(trainingdata.intent_examples) == 46
-    assert len(trainingdata.response_examples) == 4
+    NUM_TRAIN_EXAMPLES = 46
+    NUM_RESPONSE_EXAMPLES = 4
 
-    trainingdata_train, trainingdata_test = trainingdata.train_test_split(
-        train_frac=0.8
-    )
+    assert len(training_data.training_examples) == NUM_TRAIN_EXAMPLES
+    assert len(training_data.intent_examples) == NUM_TRAIN_EXAMPLES
+    assert len(training_data.response_examples) == NUM_RESPONSE_EXAMPLES
 
-    assert (
-        len(trainingdata_test.training_examples)
-        + len(trainingdata_train.training_examples)
-        == 46
-    )
-    assert len(trainingdata_train.training_examples) == 34
-    assert len(trainingdata_test.training_examples) == 12
+    for train_percent in range(50, 95, 5):
+        train_frac = train_percent / 100.0
+        train_split, test_split = training_data.train_test_split(train_frac)
 
-    assert len(trainingdata.number_of_examples_per_intent.keys()) == len(
-        trainingdata_test.number_of_examples_per_intent.keys()
-    )
-    assert len(trainingdata.number_of_examples_per_intent.keys()) == len(
-        trainingdata_train.number_of_examples_per_intent.keys()
-    )
-    assert len(trainingdata.number_of_examples_per_response.keys()) == len(
-        trainingdata_test.number_of_examples_per_response.keys()
-    )
-    assert len(trainingdata.number_of_examples_per_response.keys()) == len(
-        trainingdata_train.number_of_examples_per_response.keys()
-    )
+        assert (
+            len(test_split.training_examples) + len(train_split.training_examples)
+            == NUM_TRAIN_EXAMPLES
+        )
+
+        num_classes = (
+            len(training_data.number_of_examples_per_intent.keys())
+            + -len(training_data.retrieval_intents)
+            + len(training_data.number_of_examples_per_response)
+        )
+
+        expected_num_train_examples_floor = int(train_frac * NUM_TRAIN_EXAMPLES)
+        if NUM_TRAIN_EXAMPLES - expected_num_train_examples_floor < num_classes:
+            expected_num_train_examples_floor = NUM_TRAIN_EXAMPLES - num_classes - 1
+
+        assert len(train_split.training_examples) >= expected_num_train_examples_floor
+        assert (
+            len(train_split.training_examples) <= expected_num_train_examples_floor + 1
+        )
+
+        assert len(training_data.number_of_examples_per_intent.keys()) == len(
+            test_split.number_of_examples_per_intent.keys()
+        )
+        assert len(training_data.number_of_examples_per_intent.keys()) == len(
+            train_split.number_of_examples_per_intent.keys()
+        )
+        assert len(training_data.number_of_examples_per_response.keys()) == len(
+            train_split.number_of_examples_per_response.keys()
+        )
+        assert len(training_data.number_of_examples_per_response.keys()) == len(
+            train_split.number_of_examples_per_response.keys()
+        )
 
 
 @pytest.mark.parametrize(
     "filepaths",
-    [["data/examples/rasa/demo-rasa.md", "data/examples/rasa/demo-rasa-responses.md"]],
+    [
+        [
+            "data/examples/rasa/demo-rasa.yml",
+            "data/examples/rasa/demo-rasa-responses.yml",
+        ]
+    ],
 )
 def test_train_test_split_with_random_seed(filepaths):
     from rasa.shared.importers.utils import training_data_from_paths
@@ -289,8 +325,8 @@ def test_train_test_split_with_random_seed(filepaths):
     "files",
     [
         ("data/examples/rasa/demo-rasa.json", "data/test/multiple_files_json"),
-        ("data/examples/rasa/demo-rasa.md", "data/test/multiple_files_markdown"),
-        ("data/examples/rasa/demo-rasa.md", "data/test/duplicate_intents_markdown"),
+        ("data/examples/rasa/demo-rasa.yml", "data/test/multiple_files_markdown"),
+        ("data/examples/rasa/demo-rasa.yml", "data/test/duplicate_intents_yaml"),
     ],
 )
 def test_data_merging(files):
@@ -386,7 +422,7 @@ def test_multiword_entities(tmp_path):
 def test_nonascii_entities(tmp_path):
     data = """
 {
-  "luis_schema_version": "5.0",
+  "luis_schema_version": "7.0",
   "utterances" : [
     {
       "text": "I am looking for a ßäæ ?€ö) item",
@@ -406,13 +442,13 @@ def test_nonascii_entities(tmp_path):
     td = load_data(str(f))
     assert len(td.entity_examples) == 1
     example = td.entity_examples[0]
-    entities = example.get("entities")
+    entities = example.get(ENTITIES)
     assert len(entities) == 1
     entity = entities[0]
-    assert entity["value"] == "ßäæ ?€ö)"
-    assert entity["start"] == 19
-    assert entity["end"] == 27
-    assert entity["entity"] == "description"
+    assert entity[ENTITY_ATTRIBUTE_VALUE] == "ßäæ ?€ö)"
+    assert entity[ENTITY_ATTRIBUTE_START] == 19
+    assert entity[ENTITY_ATTRIBUTE_END] == 27
+    assert entity[ENTITY_ATTRIBUTE_TYPE] == "description"
 
 
 def test_entities_synonyms(tmp_path):
@@ -488,7 +524,7 @@ def cmp_dict_list(firsts, seconds):
             None,
         ),
         (
-            "data/examples/luis/demo-restaurants_v5.json",
+            "data/examples/luis/demo-restaurants_v7.json",
             "data/test/luis_converted_to_rasa.json",
             "json",
             None,
@@ -506,20 +542,20 @@ def cmp_dict_list(firsts, seconds):
             "es",
         ),
         (
-            "data/examples/rasa/demo-rasa.md",
+            "data/examples/rasa/demo-rasa.yml",
             "data/test/md_converted_to_json.json",
             "json",
             None,
         ),
         (
             "data/examples/rasa/demo-rasa.json",
-            "data/test/json_converted_to_md.md",
+            "data/test_md/json_converted_to_md.md",
             "md",
             None,
         ),
         (
             "data/test/training_data_containing_special_chars.json",
-            "data/test/json_with_special_chars_convered_to_md.md",
+            "data/test_md/json_with_special_chars_converted_to_md.md",
             "md",
             None,
         ),
@@ -538,6 +574,7 @@ def test_training_data_conversion(
     cmp_message_list(td.entity_examples, gold_standard.entity_examples)
     cmp_message_list(td.intent_examples, gold_standard.intent_examples)
     assert td.entity_synonyms == gold_standard.entity_synonyms
+    assert td.entity_roles == gold_standard.entity_roles
 
     # converting the converted file back to original
     # file format and performing the same tests
@@ -558,14 +595,15 @@ def test_training_data_conversion(
     "data_file,expected_format",
     [
         (
-            "data/examples/luis/demo-restaurants_v5.json",
+            "data/examples/luis/demo-restaurants_v7.json",
             rasa.shared.data.yaml_file_extension(),
         ),
         ("data/examples", rasa.shared.data.yaml_file_extension()),
         (
-            "data/examples/rasa/demo-rasa.md",
+            "data/test_md/default_retrieval_intents.md",
             rasa.shared.data.markdown_file_extension(),
         ),
+        ("data/examples/rasa/demo-rasa.yml", rasa.shared.data.yaml_file_extension()),
         ("data/rasa_yaml_examples", rasa.shared.data.yaml_file_extension()),
     ],
 )
@@ -624,7 +662,7 @@ async def test_without_additional_e2e_examples(tmp_path: Path):
         [
             StoryStep(
                 events=[
-                    UserUttered("greet_from_stories", {"name": "greet_from_stories"}),
+                    UserUttered(None, {"name": "greet_from_stories"}),
                     ActionExecuted("utter_greet_from_stories"),
                 ]
             )
@@ -639,5 +677,101 @@ async def test_without_additional_e2e_examples(tmp_path: Path):
     training_data = await importer.get_nlu_data()
 
     assert training_data.training_examples
-    assert training_data.is_empty()
-    assert not training_data.without_empty_e2e_examples().training_examples
+    assert not training_data.is_empty()
+    assert len(training_data.nlu_examples) == 0
+
+
+@pytest.mark.parametrize(
+    "source_lookup_table,expected_lookup_table",
+    [
+        (
+            {"name": "plates", "elements": "data/test/lookup_tables/plates.txt"},
+            {
+                "name": "plates",
+                "elements": "tacos\nbeef\nmapo tofu\nburrito\nlettuce wrap",
+            },
+        ),
+        (
+            {"name": "plates", "elements": ["data/test/lookup_tables/plates.txt"]},
+            {
+                "name": "plates",
+                "elements": "tacos\nbeef\nmapo tofu\nburrito\nlettuce wrap",
+            },
+        ),
+        (
+            {
+                "name": "plates",
+                "elements": "data/test/lookup_tables/not-existing-file.txt",
+            },
+            {
+                "name": "plates",
+                "elements": "data/test/lookup_tables/not-existing-file.txt",
+            },
+        ),
+        (
+            {"name": "test", "some_key": "some_value", "elements": "everything else"},
+            {"name": "test", "some_key": "some_value", "elements": "everything else"},
+        ),
+    ],
+)
+def test_load_lookup_table(
+    source_lookup_table: Dict[Text, Any], expected_lookup_table: Dict[Text, Any]
+):
+    assert TrainingData._load_lookup_table(source_lookup_table) == expected_lookup_table
+
+
+def test_fingerprint_is_same_when_loading_data_again():
+    from rasa.shared.importers.utils import training_data_from_paths
+
+    files = [
+        "data/examples/rasa/demo-rasa.yml",
+        "data/examples/rasa/demo-rasa-responses.yml",
+    ]
+    td1 = training_data_from_paths(files, language="en")
+    td2 = training_data_from_paths(files, language="en")
+    assert td1.fingerprint() == td2.fingerprint()
+
+
+def test_fingerprint_is_different_when_lookup_table_has_changed(
+    monkeypatch: MonkeyPatch,
+):
+    from rasa.shared.importers.utils import training_data_from_paths
+
+    files = [
+        "data/test/lookup_tables/lookup_table.json",
+    ]
+
+    td1 = training_data_from_paths(files, language="en")
+    fingerprint1 = td1.fingerprint()
+
+    monkeypatch.setattr(
+        TrainingData,
+        "_load_lookup_table",
+        Mock(return_value={"name": "plates", "elements": "tacos\nbeef"}),
+    )
+    td2 = training_data_from_paths(files, language="en")
+    fingerprint2 = td2.fingerprint()
+
+    assert fingerprint1 != fingerprint2
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        Message({INTENT: "intent2"}),
+        Message({ENTITIES: [{"entity": "entity2"}]}),
+        Message({ENTITIES: [{"entity": "entity1", "group": "new_group"}]}),
+        Message({ENTITIES: [{"entity": "entity1", "role": "new_role"}]}),
+        Message({ACTION_NAME: "action_name2"}),
+    ],
+)
+def test_label_fingerprints(message: Message):
+    training_data1 = TrainingData(
+        [
+            Message({INTENT: "intent1"}),
+            Message({ENTITIES: [{"entity": "entity1"}]}),
+            Message({ACTION_NAME: "action_name1"}),
+        ]
+    )
+    training_data2 = training_data1.merge(TrainingData([message]))
+    assert training_data1.label_fingerprint() != training_data2.label_fingerprint()

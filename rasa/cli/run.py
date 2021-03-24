@@ -1,7 +1,7 @@
 import argparse
 import logging
 import os
-from typing import List, Text
+from typing import List, Text, NoReturn
 
 from rasa.cli import SubParsersAction
 from rasa.cli.arguments import run as arguments
@@ -74,8 +74,13 @@ def _validate_model_path(model_path: Text, parameter: Text, default: Text):
     return model_path
 
 
-def run(args: argparse.Namespace):
-    import rasa.run
+def run(args: argparse.Namespace) -> NoReturn:
+    """Entrypoint for `rasa run`.
+
+    Args:
+        args: The CLI arguments.
+    """
+    import rasa
 
     args.endpoints = rasa.cli.utils.get_validated_path(
         args.endpoints, "endpoints", DEFAULT_ENDPOINTS_PATH, True
@@ -122,12 +127,12 @@ def run(args: argparse.Namespace):
         return
 
     rasa.shared.utils.cli.print_error(
-        "No model found. You have three options to provide a model:\n"
-        "1. Configure a model server in the endpoint configuration and provide "
-        "the configuration via '--endpoints'.\n"
-        "2. Specify a remote storage via '--remote-storage' to load the model "
-        "from.\n"
-        "3. Train a model before running the server using `rasa train` and "
-        "use '--model' to provide the model path.\n"
-        "For more information check {}.".format(DOCS_BASE_URL + "/model-storage")
+        f"No model found. You have three options to provide a model:\n"
+        f"1. Configure a model server in the endpoint configuration and provide "
+        f"the configuration via '--endpoints'.\n"
+        f"2. Specify a remote storage via '--remote-storage' to load the model "
+        f"from.\n"
+        f"3. Train a model before running the server using `rasa train` and "
+        f"use '--model' to provide the model path.\n"
+        f"For more information check {DOCS_BASE_URL}/model-storage."
     )

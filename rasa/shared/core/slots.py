@@ -3,6 +3,7 @@ import logging
 from typing import Any, Dict, List, Optional, Text, Type
 
 import rasa.shared.core.constants
+from rasa.shared.exceptions import RasaException
 import rasa.shared.utils.common
 import rasa.shared.utils.io
 from rasa.shared.constants import DOCS_URL_SLOTS
@@ -10,7 +11,17 @@ from rasa.shared.constants import DOCS_URL_SLOTS
 logger = logging.getLogger(__name__)
 
 
+class InvalidSlotTypeException(RasaException):
+    """Raised if a slot type is invalid."""
+
+
+class InvalidSlotConfigError(RasaException, ValueError):
+    """Raised if a slot's config is invalid."""
+
+
 class Slot:
+    """Key-value store for storing information during a conversation."""
+
     type_name = None
 
     def __init__(
@@ -34,11 +45,12 @@ class Slot:
                 influence the predictions of the dialogue polices.
         """
         self.name = name
-        self.value = initial_value
+        self._value = initial_value
         self.initial_value = initial_value
         self._value_reset_delay = value_reset_delay
         self.auto_fill = auto_fill
         self.influence_conversation = influence_conversation
+        self._has_been_set = False
 
     def feature_dimensionality(self) -> int:
         """How many features this single slot creates.
@@ -87,7 +99,25 @@ class Slot:
         )
 
     def reset(self) -> None:
+        """Resets the slot's value to the initial value."""
         self.value = self.initial_value
+        self._has_been_set = False
+
+    @property
+    def value(self) -> Any:
+        """Gets the slot's value."""
+        return self._value
+
+    @value.setter
+    def value(self, value: Any) -> None:
+        """Sets the slot's value."""
+        self._value = value
+        self._has_been_set = True
+
+    @property
+    def has_been_set(self) -> bool:
+        """Indicates if the slot's value has been set."""
+        return self._has_been_set
 
     def __str__(self) -> Text:
         return f"{self.__class__.__name__}({self.name}: {self.value})"
@@ -104,10 +134,11 @@ class Slot:
         try:
             return rasa.shared.utils.common.class_from_module_path(type_name)
         except (ImportError, AttributeError):
-            raise ValueError(
-                "Failed to find slot type, '{}' is neither a known type nor "
-                "user-defined. If you are creating your own slot type, make "
-                "sure its module path is correct.".format(type_name)
+            raise InvalidSlotTypeException(
+                f"Failed to find slot type, '{type_name}' is neither a known type nor "
+                f"user-defined. If you are creating your own slot type, make "
+                f"sure its module path is correct. "
+                f"You can find all build in types at {DOCS_URL_SLOTS}"
             )
 
     def persistence_info(self) -> Dict[str, Any]:
@@ -139,7 +170,7 @@ class FloatSlot(Slot):
         self.min_value = min_value
 
         if min_value >= max_value:
-            raise ValueError(
+            raise InvalidSlotConfigError(
                 "Float slot ('{}') created with an invalid range "
                 "using min ({}) and max ({}) values. Make sure "
                 "min is smaller than max."
@@ -160,18 +191,24 @@ class FloatSlot(Slot):
                 covered_range = abs(self.max_value - self.min_value)
             else:
                 covered_range = 1
-            return [(capped_value - self.min_value) / covered_range]
+            return [1.0, (capped_value - self.min_value) / covered_range]
         except (TypeError, ValueError):
-            return [0.0]
+            return [0.0, 0.0]
 
     def persistence_info(self) -> Dict[Text, Any]:
+        """Returns relevant information to persist this slot."""
         d = super().persistence_info()
         d["max_value"] = self.max_value
         d["min_value"] = self.min_value
         return d
 
+    def _feature_dimensionality(self) -> int:
+        return len(self.as_feature())
+
 
 class BooleanSlot(Slot):
+    """A slot storing a truth value."""
+
     type_name = "bool"
 
     def _as_feature(self) -> List[float]:
@@ -241,7 +278,7 @@ class UnfeaturizedSlot(Slot):
         influence_conversation: bool = False,
     ) -> None:
         if influence_conversation:
-            raise ValueError(
+            raise InvalidSlotConfigError(
                 f"An {UnfeaturizedSlot.__name__} cannot be featurized. "
                 f"Please use a different slot type for slot '{name}' instead. See the "
                 f"documentation for more information: {DOCS_URL_SLOTS}"
@@ -292,8 +329,15 @@ class CategoricalSlot(Slot):
             )
 
     def persistence_info(self) -> Dict[Text, Any]:
+        """Returns serialized slot."""
         d = super().persistence_info()
-        d["values"] = self.values
+        d["values"] = [
+            value
+            for value in self.values
+            # Don't add default slot when persisting it.
+            # We'll re-add it on the fly when creating the domain.
+            if value != rasa.shared.core.constants.DEFAULT_CATEGORICAL_SLOT_VALUE
+        ]
         return d
 
     def _as_feature(self) -> List[float]:
@@ -348,7 +392,7 @@ class AnySlot(Slot):
         influence_conversation: bool = False,
     ) -> None:
         if influence_conversation:
-            raise ValueError(
+            raise InvalidSlotConfigError(
                 f"An {AnySlot.__name__} cannot be featurized. "
                 f"Please use a different slot type for slot '{name}' instead. If you "
                 f"need to featurize a data type which is not supported out of the box, "
@@ -358,4 +402,17 @@ class AnySlot(Slot):
 
         super().__init__(
             name, initial_value, value_reset_delay, auto_fill, influence_conversation
+        )
+
+    def __eq__(self, other: Any) -> bool:
+        """Compares object with other object."""
+        if not isinstance(other, AnySlot):
+            return NotImplemented
+
+        return (
+            self.name == other.name
+            and self.initial_value == other.initial_value
+            and self._value_reset_delay == other._value_reset_delay
+            and self.auto_fill == other.auto_fill
+            and self.value == other.value
         )

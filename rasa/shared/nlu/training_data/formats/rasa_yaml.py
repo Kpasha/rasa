@@ -1,25 +1,29 @@
 import logging
 from collections import OrderedDict
 from pathlib import Path
-from typing import Text, Any, List, Dict, Tuple, Union, Iterator, Optional
+from typing import Text, Any, List, Dict, Tuple, Union, Iterator, Optional, Callable
 
 import rasa.shared.data
-from rasa.shared.exceptions import RasaException
+from rasa.shared.core.domain import Domain
+from rasa.shared.exceptions import YamlException
 from rasa.shared.utils import validation
-from ruamel.yaml import YAMLError, StringIO
+from ruamel.yaml import StringIO
+from ruamel.yaml.scalarstring import LiteralScalarString
 
 from rasa.shared.constants import (
-    DOCS_URL_TRAINING_DATA_NLU,
+    DOCS_URL_TRAINING_DATA,
     LATEST_TRAINING_DATA_FORMAT_VERSION,
 )
+from rasa.shared.nlu.constants import METADATA_INTENT, METADATA_EXAMPLE
 from rasa.shared.nlu.training_data.formats.readerwriter import (
     TrainingDataReader,
     TrainingDataWriter,
 )
 import rasa.shared.utils.io
-
+import rasa.shared.nlu.training_data.util
 from rasa.shared.nlu.training_data.training_data import TrainingData
 from rasa.shared.nlu.training_data.message import Message
+
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +64,7 @@ class RasaYAMLReader(TrainingDataReader):
         If the string is not in the right format, an exception will be raised."""
         try:
             validation.validate_yaml_schema(string, NLU_SCHEMA_FILE)
-        except validation.YamlValidationException as e:
+        except YamlException as e:
             e.filename = self.filename
             raise e
 
@@ -83,7 +87,7 @@ class RasaYAMLReader(TrainingDataReader):
         ):
             return TrainingData()
 
-        for key, value in yaml_content.items():  # pytype: disable=attribute-error
+        for key, value in yaml_content.items():
             if key == KEY_NLU:
                 self._parse_nlu(value)
             elif key == KEY_RESPONSES:
@@ -109,7 +113,7 @@ class RasaYAMLReader(TrainingDataReader):
                     f"{nlu_item}\n"
                     f"Items under the '{KEY_NLU}' key must be YAML dictionaries. "
                     f"This block will be skipped.",
-                    docs=DOCS_URL_TRAINING_DATA_NLU,
+                    docs=DOCS_URL_TRAINING_DATA,
                 )
                 continue
 
@@ -129,7 +133,7 @@ class RasaYAMLReader(TrainingDataReader):
                     f"Supported keys are: '{KEY_INTENT}', '{KEY_SYNONYM}', "
                     f"'{KEY_REGEX}', '{KEY_LOOKUP}'. "
                     f"This section will be skipped.",
-                    docs=DOCS_URL_TRAINING_DATA_NLU,
+                    docs=DOCS_URL_TRAINING_DATA,
                 )
 
     def _parse_intent(self, intent_data: Dict[Text, Any]) -> None:
@@ -143,7 +147,7 @@ class RasaYAMLReader(TrainingDataReader):
                 f"The intent has an empty name. "
                 f"Intents should have a name defined under the {KEY_INTENT} key. "
                 f"It will be skipped.",
-                docs=DOCS_URL_TRAINING_DATA_NLU,
+                docs=DOCS_URL_TRAINING_DATA,
             )
             return
 
@@ -171,14 +175,12 @@ class RasaYAMLReader(TrainingDataReader):
         if isinstance(examples, list):
             example_tuples = [
                 (
-                    # pytype: disable=attribute-error
                     example.get(KEY_INTENT_TEXT, "").strip(STRIP_SYMBOLS),
                     example.get(KEY_METADATA),
                 )
                 for example in examples
                 if example
             ]
-        # pytype: enable=attribute-error
         elif isinstance(examples, str):
             example_tuples = [
                 (example, None)
@@ -190,7 +192,7 @@ class RasaYAMLReader(TrainingDataReader):
                 f"while processing intent '{intent}':\n"
                 f"{examples}\n"
                 f"This block will be skipped.",
-                docs=DOCS_URL_TRAINING_DATA_NLU,
+                docs=DOCS_URL_TRAINING_DATA,
             )
             return []
 
@@ -198,7 +200,7 @@ class RasaYAMLReader(TrainingDataReader):
             rasa.shared.utils.io.raise_warning(
                 f"Issue found while processing '{self.filename}': "
                 f"Intent '{intent}' has no examples.",
-                docs=DOCS_URL_TRAINING_DATA_NLU,
+                docs=DOCS_URL_TRAINING_DATA,
             )
 
         results = []
@@ -218,7 +220,7 @@ class RasaYAMLReader(TrainingDataReader):
                 f"The synonym has an empty name. "
                 f"Synonyms should have a name defined under the {KEY_SYNONYM} key. "
                 f"It will be skipped.",
-                docs=DOCS_URL_TRAINING_DATA_NLU,
+                docs=DOCS_URL_TRAINING_DATA,
             )
             return
 
@@ -229,7 +231,7 @@ class RasaYAMLReader(TrainingDataReader):
                 f"Issue found while processing '{self.filename}': "
                 f"{KEY_SYNONYM}: {synonym_name} doesn't have any examples. "
                 f"It will be skipped.",
-                docs=DOCS_URL_TRAINING_DATA_NLU,
+                docs=DOCS_URL_TRAINING_DATA,
             )
             return
 
@@ -238,7 +240,7 @@ class RasaYAMLReader(TrainingDataReader):
                 f"Unexpected block found in '{self.filename}':\n"
                 f"{examples}\n"
                 f"It will be skipped.",
-                docs=DOCS_URL_TRAINING_DATA_NLU,
+                docs=DOCS_URL_TRAINING_DATA,
             )
             return
 
@@ -253,7 +255,7 @@ class RasaYAMLReader(TrainingDataReader):
                 f"The regex has an empty name."
                 f"Regex should have a name defined under the '{KEY_REGEX}' key. "
                 f"It will be skipped.",
-                docs=DOCS_URL_TRAINING_DATA_NLU,
+                docs=DOCS_URL_TRAINING_DATA,
             )
             return
 
@@ -263,7 +265,7 @@ class RasaYAMLReader(TrainingDataReader):
                 f"Issue found while processing '{self.filename}': "
                 f"'{KEY_REGEX}: {regex_name}' doesn't have any examples. "
                 f"It will be skipped.",
-                docs=DOCS_URL_TRAINING_DATA_NLU,
+                docs=DOCS_URL_TRAINING_DATA,
             )
             return
 
@@ -272,7 +274,7 @@ class RasaYAMLReader(TrainingDataReader):
                 f"Unexpected block found in '{self.filename}':\n"
                 f"{examples}\n"
                 f"This block will be skipped.",
-                docs=DOCS_URL_TRAINING_DATA_NLU,
+                docs=DOCS_URL_TRAINING_DATA,
             )
             return
 
@@ -289,7 +291,7 @@ class RasaYAMLReader(TrainingDataReader):
                 f"The lookup item has an empty name. "
                 f"Lookup items should have a name defined under the '{KEY_LOOKUP}' "
                 f"key. It will be skipped.",
-                docs=DOCS_URL_TRAINING_DATA_NLU,
+                docs=DOCS_URL_TRAINING_DATA,
             )
             return
 
@@ -299,7 +301,7 @@ class RasaYAMLReader(TrainingDataReader):
                 f"Issue found while processing '{self.filename}': "
                 f"'{KEY_LOOKUP}: {lookup_item_name}' doesn't have any examples. "
                 f"It will be skipped.",
-                docs=DOCS_URL_TRAINING_DATA_NLU,
+                docs=DOCS_URL_TRAINING_DATA,
             )
             return
 
@@ -308,7 +310,7 @@ class RasaYAMLReader(TrainingDataReader):
                 f"Unexpected block found in '{self.filename}':\n"
                 f"{examples}\n"
                 f"This block will be skipped.",
-                docs=DOCS_URL_TRAINING_DATA_NLU,
+                docs=DOCS_URL_TRAINING_DATA,
             )
             return
 
@@ -326,13 +328,13 @@ class RasaYAMLReader(TrainingDataReader):
                     f"'{MULTILINE_TRAINING_EXAMPLE_LEADING_SYMBOL}' symbol: "
                     f"{example}\n"
                     f"This training example will be skipped.",
-                    docs=DOCS_URL_TRAINING_DATA_NLU,
+                    docs=DOCS_URL_TRAINING_DATA,
                 )
                 continue
             yield example[1:].strip(STRIP_SYMBOLS)
 
     @staticmethod
-    def is_yaml_nlu_file(filename: Text) -> bool:
+    def is_yaml_nlu_file(filename: Union[Text, Path]) -> bool:
         """Checks if the specified file possibly contains NLU training data in YAML.
 
         Args:
@@ -341,23 +343,15 @@ class RasaYAMLReader(TrainingDataReader):
         Returns:
             `True` if the `filename` is possibly a valid YAML NLU file,
             `False` otherwise.
+
+        Raises:
+            YamlException: if the file seems to be a YAML file (extension) but
+                can not be read / parsed.
         """
         if not rasa.shared.data.is_likely_yaml_file(filename):
             return False
 
-        try:
-            content = rasa.shared.utils.io.read_yaml_file(filename)
-
-            return any(key in content for key in {KEY_NLU, KEY_RESPONSES})
-        except (YAMLError, Warning) as e:
-            logger.error(
-                f"Tried to check if '{filename}' is a NLU file, but failed to "
-                f"read it. If this file contains NLU data, you should "
-                f"investigate this error, otherwise it is probably best to "
-                f"move the file to a different location. "
-                f"Error: {e}"
-            )
-            return False
+        return rasa.shared.utils.io.is_key_in_yaml(filename, KEY_NLU, KEY_RESPONSES)
 
 
 class RasaYAMLWriter(TrainingDataWriter):
@@ -417,7 +411,9 @@ class RasaYAMLWriter(TrainingDataWriter):
             result[KEY_NLU] = nlu_items
 
         if training_data.responses:
-            result[KEY_RESPONSES] = training_data.responses
+            result[KEY_RESPONSES] = Domain.get_responses_with_multilines(
+                training_data.responses
+            )
 
         return result
 
@@ -473,23 +469,94 @@ class RasaYAMLWriter(TrainingDataWriter):
         training_examples: Dict,
         key_name: Text,
         key_examples: Text,
-        example_extraction_predicate=lambda x: x,
+        example_extraction_predicate: Callable[[Dict[Text, Any]], Text] = lambda x: x,
     ) -> List[OrderedDict]:
-        from ruamel.yaml.scalarstring import LiteralScalarString
+        intents = []
 
-        result = []
-        for entity_key, examples in training_examples.items():
+        for intent_name, examples in training_examples.items():
+            converted, intent_metadata = RasaYAMLWriter._convert_training_examples(
+                examples, example_extraction_predicate
+            )
 
-            converted_examples = [
-                TrainingDataWriter.generate_list_item(
-                    example_extraction_predicate(example).strip(STRIP_SYMBOLS)
+            intent = OrderedDict()
+            intent[key_name] = intent_name
+            if intent_metadata:
+                intent[KEY_METADATA] = intent_metadata
+
+            examples_have_metadata = any(KEY_METADATA in ex for ex in converted)
+            example_texts_have_escape_chars = any(
+                rasa.shared.nlu.training_data.util.has_string_escape_chars(
+                    ex.get(KEY_INTENT_TEXT, "")
                 )
-                for example in examples
-            ]
+                for ex in converted
+            )
 
-            next_item = OrderedDict()
-            next_item[key_name] = entity_key
-            next_item[key_examples] = LiteralScalarString("".join(converted_examples))
-            result.append(next_item)
+            if examples_have_metadata or example_texts_have_escape_chars:
+                rendered = RasaYAMLWriter._render_training_examples_as_objects(
+                    converted
+                )
+            else:
+                rendered = RasaYAMLWriter._render_training_examples_as_text(converted)
+            intent[key_examples] = rendered
 
-        return result
+            intents.append(intent)
+
+        return intents
+
+    @staticmethod
+    def _convert_training_examples(
+        training_examples: List[Dict],
+        example_extraction_predicate: Callable[[Dict[Text, Any]], Text] = lambda x: x,
+    ) -> Tuple[List[Dict], Optional[Dict]]:
+        """Returns converted training examples and potential intent metadata."""
+        converted_examples = []
+        intent_metadata = None
+
+        for example in training_examples:
+            converted = {
+                KEY_INTENT_TEXT: example_extraction_predicate(example).strip(
+                    STRIP_SYMBOLS
+                )
+            }
+
+            if isinstance(example, dict) and KEY_METADATA in example:
+                metadata = example[KEY_METADATA]
+
+                if METADATA_EXAMPLE in metadata:
+                    converted[KEY_METADATA] = metadata[METADATA_EXAMPLE]
+
+                if intent_metadata is None and METADATA_INTENT in metadata:
+                    intent_metadata = metadata[METADATA_INTENT]
+
+            converted_examples.append(converted)
+
+        return converted_examples, intent_metadata
+
+    @staticmethod
+    def _render_training_examples_as_objects(examples: List[Dict]) -> List[Dict]:
+        """Renders training examples as objects.
+
+        The `text` item is rendered as a literal scalar string.
+
+        Given the input of a single example:
+            {'text': 'how much CO2 will that use?'}
+        Its return value is a dictionary that will be rendered in YAML as:
+        ```
+            text: |
+              how much CO2 will that use?
+        ```
+        """
+
+        def render(example: Dict) -> Dict:
+            text = example[KEY_INTENT_TEXT]
+            example[KEY_INTENT_TEXT] = LiteralScalarString(text + "\n")
+            return example
+
+        return [render(ex) for ex in examples]
+
+    @staticmethod
+    def _render_training_examples_as_text(examples: List[Dict]) -> List[Text]:
+        def render(example: Dict) -> Text:
+            return TrainingDataWriter.generate_list_item(example[KEY_INTENT_TEXT])
+
+        return LiteralScalarString("".join([render(example) for example in examples]))

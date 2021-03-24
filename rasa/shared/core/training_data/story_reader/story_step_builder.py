@@ -18,7 +18,9 @@ logger = logging.getLogger(__name__)
 
 
 class StoryStepBuilder:
-    def __init__(self, name: Text, source_name: Text, is_rule: bool = False) -> None:
+    def __init__(
+        self, name: Text, source_name: Optional[Text], is_rule: bool = False
+    ) -> None:
         self.name = name
         self.source_name = source_name
         self.story_steps = []
@@ -59,13 +61,13 @@ class StoryStepBuilder:
             return [Checkpoint(name) for name in end_names]
 
     def add_user_messages(
-        self, messages: List[UserUttered], is_used_for_conversion: bool = False
+        self, messages: List[UserUttered], is_used_for_training: bool = True
     ) -> None:
         """Adds next story steps with the user's utterances.
 
         Args:
             messages: User utterances.
-            is_used_for_conversion: Identifies if the user utterance is a part of
+            is_used_for_training: Identifies if the user utterance is a part of
               OR statement. This parameter is used only to simplify the conversation
               from MD story files. Don't use it other ways, because it ends up
               in a invalid story that cannot be user for real training.
@@ -80,7 +82,7 @@ class StoryStepBuilder:
                 t.add_user_message(messages[0])
         else:
             # this simplifies conversion between formats, but breaks the logic
-            if is_used_for_conversion:
+            if not is_used_for_training:
                 for t in self.current_steps:
                     t.add_events(messages)
                 return
@@ -89,9 +91,8 @@ class StoryStepBuilder:
             # user can use the express the same thing
             # we need to copy the blocks and create one
             # copy for each possible message
-            prefix = GENERATED_CHECKPOINT_PREFIX + "OR_"
-            generated_checkpoint = rasa.shared.core.training_data.structures.generate_id(
-                prefix, GENERATED_HASH_LENGTH
+            generated_checkpoint = self._generate_checkpoint_name_for_or_statement(
+                messages
             )
             updated_steps = []
             for t in self.current_steps:
@@ -141,3 +142,35 @@ class StoryStepBuilder:
             )
         ]
         return current_turns
+
+    def _generate_checkpoint_name_for_or_statement(
+        self, messages: List[UserUttered]
+    ) -> str:
+        """Generates a unique checkpoint name for an or statement.
+
+        The name is based on the current story/rule name,
+        the current place in the story since the last checkpoint or start,
+        the name of the starting checkpoints,
+        and the involved intents/e2e messages.
+        """
+        messages_texts_or_intents = sorted([str(m) for m in messages])
+        start_checkpoint_names = sorted(
+            list({chk.name for s in self.current_steps for chk in s.start_checkpoints})
+        )
+        events = [str(e) for s in self.current_steps for e in s.events]
+        # name: to identify the current story or rule
+        # events: to identify what has happened so far
+        #         within the current story/rule
+        # start checkpoint names: to identify the section
+        #                         within the current story/rule when there are
+        #                         multiple internal checkpoints
+        # messages texts or intents: identifying the members of the or statement
+        unique_id = (
+            f"{self.name}_<>_{'@@@'.join(events)}"
+            f"_<>_{'@@@'.join(start_checkpoint_names)}"
+            f"_<>_{'@@@'.join(messages_texts_or_intents)}"
+        )
+        hashed_id = rasa.shared.utils.io.get_text_hash(unique_id)[
+            :GENERATED_HASH_LENGTH
+        ]
+        return f"{GENERATED_CHECKPOINT_PREFIX}OR_{hashed_id}"
