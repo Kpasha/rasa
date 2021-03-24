@@ -197,7 +197,10 @@ def sort_list_of_dicts_by_first_key(dicts: List[Dict]) -> List[Dict]:
 
 
 def write_global_config_value(name: Text, value: Any) -> bool:
-    """Read global Rasa configuration.
+    """
+    Read global Rasa configuration.
+
+
 
     Args:
         name: Name of the configuration key
@@ -205,6 +208,7 @@ def write_global_config_value(name: Text, value: Any) -> bool:
 
     Returns:
         `True` if the operation was successful.
+
     """
     # need to use `rasa.constants.GLOBAL_USER_CONFIG_PATH` to allow patching
     # in tests
